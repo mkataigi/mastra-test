@@ -1,4 +1,5 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { Readable } from 'stream';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { mastra } from './mastra';
@@ -37,6 +38,8 @@ const parseRequestBody = async <T>(schema: z.ZodSchema<T>, request: Request): Pr
 };
 
 const app = new Hono();
+const { weatherAgent } = mastra.getAgents();
+const { weatherWorkflow } = mastra.getWorkflows();
 
 app.post('/agents/weather', async (c) => {
   const parsed = await parseRequestBody(agentRequestSchema, c.req.raw);
@@ -46,7 +49,7 @@ app.post('/agents/weather', async (c) => {
   }
 
   try {
-    const response = await mastra.agents.weatherAgent.stream([
+    const response = await weatherAgent.stream([
       {
         role: 'user',
         content: parsed.data.message,
@@ -73,12 +76,19 @@ app.post('/workflows/weather', async (c) => {
   }
 
   try {
-    const workflowRun = mastra.workflows.weatherWorkflow.createRun();
+    const workflowRun = weatherWorkflow.createRun();
     const result = await workflowRun.start({
       triggerData: { city: parsed.data.city },
     });
 
-    const activePaths = Array.from(result.activePaths.entries()).map(([stepId, value]) => ({
+    const activePathEntries = Array.from(
+      result.activePaths as Map<
+        string,
+        { status: string; suspendPayload?: unknown; stepPath?: string[] }
+      >,
+    );
+
+    const activePaths = activePathEntries.map(([stepId, value]) => ({
       stepId,
       status: value.status,
       suspendPayload: value.suspendPayload,
@@ -119,7 +129,10 @@ const createFetchRequest = (req: IncomingMessage, port: number): Request => {
   const host = req.headers.host ?? `localhost:${port}`;
   const url = new URL(req.url ?? '/', `http://${host}`);
   const headers = buildRequestHeaders(req);
-  const body = req.method === 'GET' || req.method === 'HEAD' ? undefined : req;
+  const body =
+    req.method === 'GET' || req.method === 'HEAD'
+      ? undefined
+      : (Readable.toWeb(req) as unknown as BodyInit);
 
   return new Request(url, {
     method: req.method,
