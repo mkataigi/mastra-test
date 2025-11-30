@@ -2,6 +2,30 @@ import { openai } from '@ai-sdk/openai';
 import { Agent } from '@mastra/core/agent';
 import { Step, Workflow } from '@mastra/core/workflows';
 import { z } from 'zod';
+import { getWeatherCondition } from '../utils/weather';
+
+type ForecastResponse = {
+  daily: {
+    time: string[];
+    temperature_2m_max: number[];
+    temperature_2m_min: number[];
+    precipitation_probability_mean: number[];
+    weathercode: number[];
+  };
+};
+
+type GeocodingResponse = {
+  results?: { latitude: number; longitude: number; name: string }[];
+};
+
+type ForecastEntry = {
+  date: string;
+  maxTemp: number;
+  minTemp: number;
+  precipitationChance: number;
+  condition: string;
+  location: string;
+};
 
 const llm = openai('gpt-4o');
 
@@ -80,34 +104,34 @@ const fetchWeather = new Step({
 
     const geocodingUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(triggerData.city)}&count=1`;
     const geocodingResponse = await fetch(geocodingUrl);
-    const geocodingData = (await geocodingResponse.json()) as {
-      results: { latitude: number; longitude: number; name: string }[];
-    };
 
-    if (!geocodingData.results?.[0]) {
+    if (!geocodingResponse.ok) {
+      throw new Error('Failed to fetch location data');
+    }
+
+    const geocodingData = (await geocodingResponse.json()) as GeocodingResponse;
+    const geocodingResult = geocodingData.results?.[0];
+
+    if (!geocodingResult) {
       throw new Error(`Location '${triggerData.city}' not found`);
     }
 
-    const { latitude, longitude, name } = geocodingData.results[0];
-
+    const { latitude, longitude, name } = geocodingResult;
     const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_mean,weathercode&timezone=auto`;
     const response = await fetch(weatherUrl);
-    const data = (await response.json()) as {
-      daily: {
-        time: string[];
-        temperature_2m_max: number[];
-        temperature_2m_min: number[];
-        precipitation_probability_mean: number[];
-        weathercode: number[];
-      };
-    };
 
-    const forecast = data.daily.time.map((date: string, index: number) => ({
+    if (!response.ok) {
+      throw new Error('Failed to fetch weather data');
+    }
+
+    const data = (await response.json()) as ForecastResponse;
+
+    const forecast: ForecastEntry[] = data.daily.time.map((date: string, index: number) => ({
       date,
       maxTemp: data.daily.temperature_2m_max[index],
       minTemp: data.daily.temperature_2m_min[index],
       precipitationChance: data.daily.precipitation_probability_mean[index],
-      condition: getWeatherCondition(data.daily.weathercode[index]!),
+      condition: getWeatherCondition(data.daily.weathercode[index] ?? 0),
       location: name,
     }));
 
@@ -118,8 +142,8 @@ const fetchWeather = new Step({
 const planActivities = new Step({
   id: 'plan-activities',
   description: 'Suggests activities based on weather conditions',
-  execute: async ({ context, mastra }) => {
-    const forecast = context?.getStepResult(fetchWeather);
+  execute: async ({ context }) => {
+    const forecast = context?.getStepResult<ForecastEntry[]>(fetchWeather);
 
     if (!forecast || forecast.length === 0) {
       throw new Error('Forecast data not found');
@@ -148,28 +172,6 @@ const planActivities = new Step({
     };
   },
 });
-
-function getWeatherCondition(code: number): string {
-  const conditions: Record<number, string> = {
-    0: 'Clear sky',
-    1: 'Mainly clear',
-    2: 'Partly cloudy',
-    3: 'Overcast',
-    45: 'Foggy',
-    48: 'Depositing rime fog',
-    51: 'Light drizzle',
-    53: 'Moderate drizzle',
-    55: 'Dense drizzle',
-    61: 'Slight rain',
-    63: 'Moderate rain',
-    65: 'Heavy rain',
-    71: 'Slight snow fall',
-    73: 'Moderate snow fall',
-    75: 'Heavy snow fall',
-    95: 'Thunderstorm',
-  };
-  return conditions[code] || 'Unknown';
-}
 
 const weatherWorkflow = new Workflow({
   name: 'weather-workflow',
