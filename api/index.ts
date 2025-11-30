@@ -88,7 +88,7 @@ app.post('/api/workflows/:workflowId/run', async (c) => {
 });
 
 export const config = {
-  runtime: 'nodejs20.x',
+  runtime: 'nodejs18.x',
 };
 
 export default handle(app);
