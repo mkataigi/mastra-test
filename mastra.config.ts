@@ -1,6 +1,4 @@
-import { defineConfig } from 'mastra';
-
-export default defineConfig({
+const config = {
   entry: './src/mastra/index.ts',
   outDir: '.mastra',
   endpoints: {
@@ -9,4 +7,6 @@ export default defineConfig({
       handler: './api/index.ts',
     },
   },
-});
+};
+
+export default config;

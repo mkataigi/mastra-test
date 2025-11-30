@@ -1,14 +1,19 @@
+/// <reference path="../types/mastra-output.d.ts" />
 import { RuntimeContext } from '@mastra/core/di';
 import { agents, workflows } from '@mastra/server/handlers';
 import { Context, Hono } from 'hono';
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { handle } from 'hono/vercel';
 
+// @ts-expect-error Generated during build; declarations are provided in ../types/mastra-output.d.ts.
 import { mastra } from '../.mastra/output/mastra.mjs';
 
 const app = new Hono();
 
 const jsonError = (context: Context, error: unknown, message: string) => {
-  const status = error instanceof Error && 'status' in error ? Number((error as Error & { status?: number }).status) : 500;
+  const status = error instanceof Error && 'status' in error
+    ? (Number((error as Error & { status?: number }).status) as ContentfulStatusCode)
+    : (500 as ContentfulStatusCode);
   const responseMessage = error instanceof Error && error.message ? error.message : message;
   return context.json({ error: responseMessage }, status);
 };
