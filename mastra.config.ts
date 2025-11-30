@@ -1,5 +1,5 @@
 const config = {
-  entry: './src/mastra/index.ts',
+  entry: './src/index.ts',
   outDir: '.mastra',
   endpoints: {
     vercel: {

@@ -38,7 +38,7 @@ const runTypeScriptBuild = () => {
 
 const writeEntrypoint = () => {
   const entryContent = [
-    "import mastra from './src/mastra/index.js';",
+    "import mastra from './src/index.js';",
     'export { mastra };',
     'export default mastra;',
     '',
