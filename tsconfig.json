@@ -11,6 +11,8 @@
     "outDir": "dist"
   },
   "include": [
-    "src/**/*"
+    "src/**/*",
+    "api/**/*.ts",
+    "mastra.config.ts"
   ]
 }
