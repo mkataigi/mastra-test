@@ -12,3 +12,5 @@ export const mastra = new Mastra({
     level: 'info',
   }),
 });
+
+export default mastra;
