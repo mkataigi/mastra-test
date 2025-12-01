@@ -1,10 +1,13 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { Readable } from 'stream';
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { z } from 'zod';
 import { mastra } from './mastra';
 
 type ValidationResult<T> = { success: true; data: T } | { success: false; error: string };
+type ActivePathDetails = { status: string; suspendPayload?: unknown; stepPath?: string[] };
+type ActivePathResponse = ActivePathDetails & { stepId: string };
 
 const agentRequestSchema = z.object({
   message: z.string().min(1, 'Message is required'),
@@ -37,6 +40,29 @@ const parseRequestBody = async <T>(schema: z.ZodSchema<T>, request: Request): Pr
   }
 };
 
+const respondWithError = (context: Context, message: string, status: number) => {
+  return context.json({ error: message }, status);
+};
+
+const collectTextFromStream = async (textStream: AsyncIterable<string>): Promise<string> => {
+  let content = '';
+
+  for await (const chunk of textStream) {
+    content += chunk;
+  }
+
+  return content;
+};
+
+const serializeActivePaths = (activePaths: Map<string, ActivePathDetails>): ActivePathResponse[] => {
+  return Array.from(activePaths.entries()).map(([stepId, value]) => ({
+    stepId,
+    status: value.status,
+    suspendPayload: value.suspendPayload,
+    stepPath: value.stepPath,
+  }));
+};
+
 const app = new Hono();
 const { weatherAgent } = mastra.getAgents();
 const { weatherWorkflow } = mastra.getWorkflows();
@@ -45,7 +71,7 @@ app.post('/agents/weather', async (c) => {
   const parsed = await parseRequestBody(agentRequestSchema, c.req.raw);
 
   if (!parsed.success) {
-    return c.json({ error: parsed.error }, 400);
+    return respondWithError(c, parsed.error, 400);
   }
 
   try {
@@ -55,16 +81,11 @@ app.post('/agents/weather', async (c) => {
         content: parsed.data.message,
       },
     ]);
-
-    let content = '';
-
-    for await (const chunk of response.textStream) {
-      content += chunk;
-    }
+    const content = await collectTextFromStream(response.textStream);
 
     return c.json({ reply: content });
   } catch (error) {
-    return c.json({ error: getErrorMessage(error) }, 500);
+    return respondWithError(c, getErrorMessage(error), 500);
   }
 });
 
@@ -72,7 +93,7 @@ app.post('/workflows/weather', async (c) => {
   const parsed = await parseRequestBody(workflowRequestSchema, c.req.raw);
 
   if (!parsed.success) {
-    return c.json({ error: parsed.error }, 400);
+    return respondWithError(c, parsed.error, 400);
   }
 
   try {
@@ -81,19 +102,7 @@ app.post('/workflows/weather', async (c) => {
       triggerData: { city: parsed.data.city },
     });
 
-    const activePathEntries = Array.from(
-      result.activePaths as Map<
-        string,
-        { status: string; suspendPayload?: unknown; stepPath?: string[] }
-      >,
-    );
-
-    const activePaths = activePathEntries.map(([stepId, value]) => ({
-      stepId,
-      status: value.status,
-      suspendPayload: value.suspendPayload,
-      stepPath: value.stepPath,
-    }));
+    const activePaths = serializeActivePaths(result.activePaths as Map<string, ActivePathDetails>);
 
     return c.json({
       runId: workflowRun.runId,
@@ -102,7 +111,7 @@ app.post('/workflows/weather', async (c) => {
       timestamp: result.timestamp,
     });
   } catch (error) {
-    return c.json({ error: getErrorMessage(error) }, 500);
+    return respondWithError(c, getErrorMessage(error), 500);
   }
 });
 
