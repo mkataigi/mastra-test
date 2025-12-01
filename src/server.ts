@@ -3,6 +3,7 @@ import { Readable } from 'stream';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
+import type { StatusCode } from 'hono/utils/http-status';
 import { mastra } from './mastra';
 
 type ValidationResult<T> = { success: true; data: T } | { success: false; error: string };
@@ -40,7 +41,7 @@ const parseRequestBody = async <T>(schema: z.ZodSchema<T>, request: Request): Pr
   }
 };
 
-const respondWithError = (context: Context, message: string, status: number) => {
+const respondWithError = (context: Context, message: string, status: StatusCode) => {
   return context.json({ error: message }, status);
 };
 
