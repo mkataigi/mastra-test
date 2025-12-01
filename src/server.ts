@@ -6,6 +6,21 @@ import { mastra } from './mastra';
 
 type ValidationResult<T> = { success: true; data: T } | { success: false; error: string };
 
+type AgentRequestBody = z.infer<typeof agentRequestSchema>;
+type WorkflowRequestBody = z.infer<typeof workflowRequestSchema>;
+
+type ActivePathValue = { status: string; suspendPayload?: unknown; stepPath?: string[] };
+
+type ActivePathEntry = {
+  stepId: string;
+  status: string;
+  suspendPayload?: unknown;
+  stepPath?: string[];
+};
+
+const BAD_REQUEST_STATUS = 400;
+const INTERNAL_SERVER_ERROR_STATUS = 500;
+
 const agentRequestSchema = z.object({
   message: z.string().min(1, 'Message is required'),
 });
@@ -37,34 +52,70 @@ const parseRequestBody = async <T>(schema: z.ZodSchema<T>, request: Request): Pr
   }
 };
 
+const collectStreamText = async (stream: AsyncIterable<string>): Promise<string> => {
+  let content = '';
+
+  for await (const chunk of stream) {
+    content += chunk;
+  }
+
+  return content;
+};
+
+const handleWeatherAgent = async ({ message }: AgentRequestBody) => {
+  const { weatherAgent } = mastra.getAgents();
+  const response = await weatherAgent.stream([
+    {
+      role: 'user',
+      content: message,
+    },
+  ]);
+
+  const content = await collectStreamText(response.textStream);
+
+  return { reply: content };
+};
+
+const mapActivePaths = (activePaths: Map<string, ActivePathValue>): ActivePathEntry[] => {
+  return Array.from(activePaths).map(([stepId, value]) => ({
+    stepId,
+    status: value.status,
+    suspendPayload: value.suspendPayload,
+    stepPath: value.stepPath,
+  }));
+};
+
+const handleWeatherWorkflow = async ({ city }: WorkflowRequestBody) => {
+  const { weatherWorkflow } = mastra.getWorkflows();
+  const workflowRun = weatherWorkflow.createRun();
+  const result = await workflowRun.start({
+    triggerData: { city },
+  });
+
+  const activePaths = mapActivePaths(result.activePaths as Map<string, ActivePathValue>);
+
+  return {
+    runId: workflowRun.runId,
+    results: result.results,
+    activePaths,
+    timestamp: result.timestamp,
+  };
+};
+
 const app = new Hono();
-const { weatherAgent } = mastra.getAgents();
-const { weatherWorkflow } = mastra.getWorkflows();
 
 app.post('/agents/weather', async (c) => {
   const parsed = await parseRequestBody(agentRequestSchema, c.req.raw);
 
   if (!parsed.success) {
-    return c.json({ error: parsed.error }, 400);
+    return c.json({ error: parsed.error }, BAD_REQUEST_STATUS);
   }
 
   try {
-    const response = await weatherAgent.stream([
-      {
-        role: 'user',
-        content: parsed.data.message,
-      },
-    ]);
-
-    let content = '';
-
-    for await (const chunk of response.textStream) {
-      content += chunk;
-    }
-
-    return c.json({ reply: content });
+    const agentResponse = await handleWeatherAgent(parsed.data);
+    return c.json(agentResponse);
   } catch (error) {
-    return c.json({ error: getErrorMessage(error) }, 500);
+    return c.json({ error: getErrorMessage(error) }, INTERNAL_SERVER_ERROR_STATUS);
   }
 });
 
@@ -72,37 +123,14 @@ app.post('/workflows/weather', async (c) => {
   const parsed = await parseRequestBody(workflowRequestSchema, c.req.raw);
 
   if (!parsed.success) {
-    return c.json({ error: parsed.error }, 400);
+    return c.json({ error: parsed.error }, BAD_REQUEST_STATUS);
   }
 
   try {
-    const workflowRun = weatherWorkflow.createRun();
-    const result = await workflowRun.start({
-      triggerData: { city: parsed.data.city },
-    });
-
-    const activePathEntries = Array.from(
-      result.activePaths as Map<
-        string,
-        { status: string; suspendPayload?: unknown; stepPath?: string[] }
-      >,
-    );
-
-    const activePaths = activePathEntries.map(([stepId, value]) => ({
-      stepId,
-      status: value.status,
-      suspendPayload: value.suspendPayload,
-      stepPath: value.stepPath,
-    }));
-
-    return c.json({
-      runId: workflowRun.runId,
-      results: result.results,
-      activePaths,
-      timestamp: result.timestamp,
-    });
+    const workflowResponse = await handleWeatherWorkflow(parsed.data);
+    return c.json(workflowResponse);
   } catch (error) {
-    return c.json({ error: getErrorMessage(error) }, 500);
+    return c.json({ error: getErrorMessage(error) }, INTERNAL_SERVER_ERROR_STATUS);
   }
 });
 
@@ -156,7 +184,7 @@ const port = Number(process.env.PORT ?? 3000);
 
 createServer(async (req, res) => {
   if (!req.url || !req.method) {
-    res.statusCode = 400;
+    res.statusCode = BAD_REQUEST_STATUS;
     res.end('Bad Request');
     return;
   }
@@ -166,7 +194,7 @@ createServer(async (req, res) => {
     const appResponse = await app.fetch(request);
     await handleResponse(appResponse, res);
   } catch (error) {
-    res.statusCode = 500;
+    res.statusCode = INTERNAL_SERVER_ERROR_STATUS;
     res.end(getErrorMessage(error));
   }
 }).listen(port, () => {
