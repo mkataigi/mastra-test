@@ -3,54 +3,66 @@ import { Agent } from '@mastra/core/agent';
 import { Step, Workflow } from '@mastra/core/workflows';
 import { z } from 'zod';
 
+type GeocodingResult = { latitude: number; longitude: number; name: string };
+type ForecastDay = {
+  date: string;
+  maxTemp: number;
+  minTemp: number;
+  precipitationChance: number;
+  condition: string;
+  location: string;
+};
+
 const llm = openai('gpt-4o');
+
+const activityPlanningInstructions = `
+You are a local activities and travel expert who excels at weather-based planning. Analyze the weather data and provide practical activity recommendations.
+
+For each day in the forecast, structure your response exactly as follows:
+
+📅 [Day, Month Date, Year]
+═══════════════════════════
+
+🌡️ WEATHER SUMMARY
+• Conditions: [brief description]
+• Temperature: [X°C/Y°F to A°C/B°F]
+• Precipitation: [X% chance]
+
+🌅 MORNING ACTIVITIES
+Outdoor:
+• [Activity Name] - [Brief description including specific location/route]
+  Best timing: [specific time range]
+  Note: [relevant weather consideration]
+
+🌞 AFTERNOON ACTIVITIES
+Outdoor:
+• [Activity Name] - [Brief description including specific location/route]
+  Best timing: [specific time range]
+  Note: [relevant weather consideration]
+
+🏠 INDOOR ALTERNATIVES
+• [Activity Name] - [Brief description including specific venue]
+  Ideal for: [weather condition that would trigger this alternative]
+
+⚠️ SPECIAL CONSIDERATIONS
+• [Any relevant weather warnings, UV index, wind conditions, etc.]
+
+Guidelines:
+- Suggest 2-3 time-specific outdoor activities per day
+- Include 1-2 indoor backup options
+- For precipitation >50%, lead with indoor activities
+- All activities must be specific to the location
+- Include specific venues, trails, or locations
+- Consider activity intensity based on temperature
+- Keep descriptions concise but informative
+
+Maintain this exact formatting for consistency, using the emoji and section headers as shown.
+`;
 
 const agent = new Agent({
   name: 'Weather Agent',
   model: llm,
-  instructions: `
-        You are a local activities and travel expert who excels at weather-based planning. Analyze the weather data and provide practical activity recommendations.
-
-        For each day in the forecast, structure your response exactly as follows:
-
-        📅 [Day, Month Date, Year]
-        ═══════════════════════════
-
-        🌡️ WEATHER SUMMARY
-        • Conditions: [brief description]
-        • Temperature: [X°C/Y°F to A°C/B°F]
-        • Precipitation: [X% chance]
-
-        🌅 MORNING ACTIVITIES
-        Outdoor:
-        • [Activity Name] - [Brief description including specific location/route]
-          Best timing: [specific time range]
-          Note: [relevant weather consideration]
-
-        🌞 AFTERNOON ACTIVITIES
-        Outdoor:
-        • [Activity Name] - [Brief description including specific location/route]
-          Best timing: [specific time range]
-          Note: [relevant weather consideration]
-
-        🏠 INDOOR ALTERNATIVES
-        • [Activity Name] - [Brief description including specific venue]
-          Ideal for: [weather condition that would trigger this alternative]
-
-        ⚠️ SPECIAL CONSIDERATIONS
-        • [Any relevant weather warnings, UV index, wind conditions, etc.]
-
-        Guidelines:
-        - Suggest 2-3 time-specific outdoor activities per day
-        - Include 1-2 indoor backup options
-        - For precipitation >50%, lead with indoor activities
-        - All activities must be specific to the location
-        - Include specific venues, trails, or locations
-        - Consider activity intensity based on temperature
-        - Keep descriptions concise but informative
-
-        Maintain this exact formatting for consistency, using the emoji and section headers as shown.
-      `,
+  instructions: activityPlanningInstructions,
 });
 
 const forecastSchema = z.array(
@@ -63,6 +75,47 @@ const forecastSchema = z.array(
     location: z.string(),
   }),
 );
+
+const fetchCoordinates = async (city: string): Promise<GeocodingResult> => {
+  const geocodingUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1`;
+  const geocodingResponse = await fetch(geocodingUrl);
+  const geocodingData = (await geocodingResponse.json()) as { results?: GeocodingResult[] };
+
+  const location = geocodingData.results?.[0];
+
+  if (!location) {
+    throw new Error(`Location '${city}' not found`);
+  }
+
+  return location;
+};
+
+const fetchForecast = async ({ latitude, longitude, name }: GeocodingResult): Promise<ForecastDay[]> => {
+  const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_mean,weathercode&timezone=auto`;
+  const response = await fetch(weatherUrl);
+  const data = (await response.json()) as {
+    daily: {
+      time: string[];
+      temperature_2m_max: number[];
+      temperature_2m_min: number[];
+      precipitation_probability_mean: number[];
+      weathercode: number[];
+    };
+  };
+
+  return data.daily.time.map((date: string, index: number) => ({
+    date,
+    maxTemp: data.daily.temperature_2m_max[index] ?? 0,
+    minTemp: data.daily.temperature_2m_min[index] ?? 0,
+    precipitationChance: data.daily.precipitation_probability_mean[index] ?? 0,
+    condition: getWeatherCondition(data.daily.weathercode[index] ?? 0),
+    location: name,
+  }));
+};
+
+const buildForecastPrompt = (forecast: ForecastDay[]): string => {
+  return `Based on the following weather forecast for ${forecast[0]?.location}, suggest appropriate activities:\n${JSON.stringify(forecast, null, 2)}\n`;
+};
 
 const fetchWeather = new Step({
   id: 'fetch-weather',
@@ -78,38 +131,8 @@ const fetchWeather = new Step({
       throw new Error('Trigger data not found');
     }
 
-    const geocodingUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(triggerData.city)}&count=1`;
-    const geocodingResponse = await fetch(geocodingUrl);
-    const geocodingData = (await geocodingResponse.json()) as {
-      results: { latitude: number; longitude: number; name: string }[];
-    };
-
-    if (!geocodingData.results?.[0]) {
-      throw new Error(`Location '${triggerData.city}' not found`);
-    }
-
-    const { latitude, longitude, name } = geocodingData.results[0];
-
-    const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_mean,weathercode&timezone=auto`;
-    const response = await fetch(weatherUrl);
-    const data = (await response.json()) as {
-      daily: {
-        time: string[];
-        temperature_2m_max: number[];
-        temperature_2m_min: number[];
-        precipitation_probability_mean: number[];
-        weathercode: number[];
-      };
-    };
-
-    const forecast = data.daily.time.map((date: string, index: number) => ({
-      date,
-      maxTemp: data.daily.temperature_2m_max[index],
-      minTemp: data.daily.temperature_2m_min[index],
-      precipitationChance: data.daily.precipitation_probability_mean[index],
-      condition: getWeatherCondition(data.daily.weathercode[index]!),
-      location: name,
-    }));
+    const location = await fetchCoordinates(triggerData.city);
+    const forecast = await fetchForecast(location);
 
     return forecast;
   },
@@ -125,9 +148,7 @@ const planActivities = new Step({
       throw new Error('Forecast data not found');
     }
 
-    const prompt = `Based on the following weather forecast for ${forecast[0]?.location}, suggest appropriate activities:
-      ${JSON.stringify(forecast, null, 2)}
-      `;
+    const prompt = buildForecastPrompt(forecast);
 
     const response = await agent.stream([
       {
