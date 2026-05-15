@@ -1,6 +1,6 @@
 minimumReleaseAge: 10080
 trustPolicy: no-downgrade
-onlyBuiltDependencies:
-  - esbuild
-  - onnxruntime-node
-  - protobufjs
+allowBuilds:
+  esbuild: true
+  onnxruntime-node: true
+  protobufjs: true
